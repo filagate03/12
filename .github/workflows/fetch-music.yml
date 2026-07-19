@@ -1,0 +1,26 @@
+name: Fetch licensed music
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fetch-music.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download CC BY 4.0 track
+        run: |
+          curl -L --fail --retry 4 \
+            'https://upload.wikimedia.org/wikipedia/commons/0/0d/Driving_to_the_Night_by_Frank_Schroeter.ogg' \
+            -o Driving_to_the_Night_by_Frank_Schroeter.ogg
+          ffprobe -v error -show_entries format=duration,size -of json Driving_to_the_Night_by_Frank_Schroeter.ogg
+      - name: Upload track
+        uses: actions/upload-artifact@v4
+        with:
+          name: licensed-music
+          path: Driving_to_the_Night_by_Frank_Schroeter.ogg
+          retention-days: 1
