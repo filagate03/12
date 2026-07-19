@@ -18,7 +18,7 @@ jobs:
           curl -L --fail --retry 4 \
             'https://upload.wikimedia.org/wikipedia/commons/0/0d/Driving_to_the_Night_by_Frank_Schroeter.ogg' \
             -o Driving_to_the_Night_by_Frank_Schroeter.ogg
-          ffprobe -v error -show_entries format=duration,size -of json Driving_to_the_Night_by_Frank_Schroeter.ogg
+          ls -lh Driving_to_the_Night_by_Frank_Schroeter.ogg
       - name: Upload track
         uses: actions/upload-artifact@v4
         with:
