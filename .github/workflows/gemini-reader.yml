@@ -1,9 +1,8 @@
 name: Gemini Share Reader
 
 on:
-  push:
-    branches:
-      - main
+  issues:
+    types: [opened, edited, reopened]
 
 permissions:
   contents: read
@@ -11,49 +10,87 @@ permissions:
 
 jobs:
   read:
+    if: startsWith(github.event.issue.title, 'GEMINI_READ')
     runs-on: ubuntu-latest
-    env:
-      TARGET_URL: https://share.gemini.google/IkrPiv5pcXis
-      ISSUE_TITLE: GEMINI_READER_IkrPiv5pcXis_20260808
     steps:
+      - name: Extract Gemini URL
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          event=json.load(open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8'))
+          body=event.get('issue',{}).get('body') or ''
+          m=re.search(r'https://(?:share\.gemini\.google|gemini\.google\.com)/[^\s<>()]+', body)
+          if not m:
+              raise SystemExit('No Gemini share URL found in issue body')
+          url=m.group(0).rstrip('.,;]')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('TARGET_URL='+url+'\n')
+          PY
+
       - name: Read Gemini share with headless Chrome
         shell: bash
         run: |
           set -euo pipefail
           CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
           if [ -z "$CHROME" ]; then
-            echo "Chrome not found" > result.txt
-          else
-            "$CHROME" --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --window-size=1440,2000 --virtual-time-budget=20000 --dump-dom "$TARGET_URL" > page.html 2> chrome.log || true
-            python3 - <<'PY'
+            echo "Chrome not found on GitHub runner" > result.txt
+            exit 0
+          fi
+
+          "$CHROME" \
+            --headless=new \
+            --no-sandbox \
+            --disable-gpu \
+            --disable-dev-shm-usage \
+            --window-size=1440,2200 \
+            --virtual-time-budget=20000 \
+            --dump-dom "$TARGET_URL" > page.html 2> chrome.log || true
+
+          python3 - <<'PY'
           from html.parser import HTMLParser
           from pathlib import Path
           import html, re, os
+
           raw=Path('page.html').read_text('utf-8',errors='ignore') if Path('page.html').exists() else ''
-          class X(HTMLParser):
-              def __init__(self): super().__init__(convert_charrefs=True); self.skip=0; self.parts=[]
+          class Extractor(HTMLParser):
+              def __init__(self):
+                  super().__init__(convert_charrefs=True)
+                  self.skip=0
+                  self.parts=[]
               def handle_starttag(self,t,a):
-                  if t in {'script','style','svg','noscript','template'}: self.skip+=1
-                  elif not self.skip and t in {'p','div','section','article','main','h1','h2','h3','h4','li','br','button','a'}: self.parts.append('\n')
+                  if t in {'script','style','svg','noscript','template'}:
+                      self.skip+=1
+                  elif not self.skip and t in {'p','div','section','article','main','h1','h2','h3','h4','li','br','button','a','td','th'}:
+                      self.parts.append('\n')
               def handle_endtag(self,t):
-                  if t in {'script','style','svg','noscript','template'} and self.skip: self.skip-=1
-                  elif not self.skip and t in {'p','div','section','article','main','h1','h2','h3','h4','li','button','a'}: self.parts.append('\n')
+                  if t in {'script','style','svg','noscript','template'} and self.skip:
+                      self.skip-=1
+                  elif not self.skip and t in {'p','div','section','article','main','h1','h2','h3','h4','li','button','a','td','th'}:
+                      self.parts.append('\n')
               def handle_data(self,d):
-                  if not self.skip: self.parts.append(d)
-          x=X(); x.feed(raw)
+                  if not self.skip:
+                      self.parts.append(d)
+
+          x=Extractor(); x.feed(raw)
           text=html.unescape(''.join(x.parts)).replace('\xa0',' ')
           lines=[]; prev=None
           for s in text.splitlines():
               s=re.sub(r'\s+',' ',s).strip()
-              if s and s!=prev: lines.append(s); prev=s
+              if not s or s==prev:
+                  continue
+              lines.append(s); prev=s
           clean='\n'.join(lines)
           if not clean:
               log=Path('chrome.log').read_text('utf-8',errors='ignore') if Path('chrome.log').exists() else ''
-              clean='NO_TEXT_EXTRACTED\n\n'+log[-12000:]
-          Path('result.txt').write_text(('URL: '+os.environ['TARGET_URL']+'\n\n'+clean)[:60000],'utf-8')
+              clean='NO_TEXT_EXTRACTED\n\nChrome log:\n'+log[-12000:]
+          out=('GEMINI_READER_RESULT\nURL: '+os.environ['TARGET_URL']+'\n\n'+clean)[:60000]
+          Path('result.txt').write_text(out,'utf-8')
           PY
-          fi
-      - name: Publish result
+
+      - name: Return result to issue
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body-file result.txt
+        shell: bash
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" --body-file result.txt
