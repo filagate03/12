@@ -1,0 +1,87 @@
+name: Gemini Share Reader
+
+on:
+  push:
+    branches:
+      - gemini-reader-run
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_URL: https://share.gemini.google/IkrPiv5pcXis
+      ISSUE_TITLE: GEMINI_READER_IkrPiv5pcXis_20260808
+    steps:
+      - name: Read Gemini share with headless Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then
+            echo "Chrome not found" > result.txt
+          else
+            "$CHROME" \
+              --headless=new \
+              --no-sandbox \
+              --disable-gpu \
+              --disable-dev-shm-usage \
+              --disable-background-networking \
+              --window-size=1440,2000 \
+              --virtual-time-budget=15000 \
+              --dump-dom "$TARGET_URL" > page.html 2> chrome.log || true
+
+            python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import html, re, os
+
+          raw = Path('page.html').read_text('utf-8', errors='ignore') if Path('page.html').exists() else ''
+          class TextExtractor(HTMLParser):
+              def __init__(self):
+                  super().__init__(convert_charrefs=True)
+                  self.skip = 0
+                  self.parts = []
+              def handle_starttag(self, tag, attrs):
+                  if tag in {'script','style','svg','noscript','template'}:
+                      self.skip += 1
+                  elif not self.skip and tag in {'p','div','section','article','main','h1','h2','h3','h4','li','br','button','a'}:
+                      self.parts.append('\n')
+              def handle_endtag(self, tag):
+                  if tag in {'script','style','svg','noscript','template'} and self.skip:
+                      self.skip -= 1
+                  elif not self.skip and tag in {'p','div','section','article','main','h1','h2','h3','h4','li','button','a'}:
+                      self.parts.append('\n')
+              def handle_data(self, data):
+                  if not self.skip:
+                      self.parts.append(data)
+
+          p = TextExtractor()
+          p.feed(raw)
+          text = html.unescape(''.join(p.parts)).replace('\xa0',' ')
+          lines=[]
+          prev=None
+          for line in text.splitlines():
+              line=re.sub(r'\s+',' ',line).strip()
+              if not line or line == prev:
+                  continue
+              lines.append(line)
+              prev=line
+          clean='\n'.join(lines)
+          head='URL: '+os.environ.get('TARGET_URL','')+'\n\n'
+          if not clean:
+              log=Path('chrome.log').read_text('utf-8', errors='ignore') if Path('chrome.log').exists() else ''
+              clean='NO_TEXT_EXTRACTED\n\nChrome log:\n'+log[-12000:]
+          Path('result.txt').write_text((head+clean)[:60000], 'utf-8')
+          PY
+          fi
+
+      - name: Publish result as issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body-file result.txt
